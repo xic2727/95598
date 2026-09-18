@@ -28,6 +28,7 @@ CONFIG_FILE = DATA_DIR / "config.json"
 EPD_WIDTH = 800
 EPD_HEIGHT = 480
 ROTATE_180 = True              # 画面翻转180度（适配屏幕安装方向）
+EPD_DRIVER = "epd7in5_V2"       # 墨水屏驱动型号: 默认微雪标准 "epd7in5_V2"，支持 "epd7in5_V2_old" 或 "epd7in5"
 
 # ── 调度参数 ──────────────────────────────────────────────
 DAILY_REFRESH_HOUR = 6      # 每日刷新时间 (24h)

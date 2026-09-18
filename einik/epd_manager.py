@@ -28,10 +28,27 @@ class EpdManager:
         self._init_partial_done = False
 
         try:
-            from waveshare_epd import epd7in5_V2_old  # type: ignore
-            self._module = epd7in5_V2_old
-            self._epd = epd7in5_V2_old.EPD()
-            log.info("EpdManager: 墨水屏驱动已加载 (%s)", epd7in5_V2_old.__name__)
+            import importlib
+            from einik.config import EPD_DRIVER
+
+            # 驱动加载候选列表：优先使用配置中指定的驱动型号，其次尝试标准 V2 及备用驱动
+            drivers_to_try = [EPD_DRIVER]
+            for candidate in ["epd7in5_V2", "epd7in5_V2_old", "epd7in5"]:
+                if candidate not in drivers_to_try:
+                    drivers_to_try.append(candidate)
+
+            for d_name in drivers_to_try:
+                try:
+                    mod = importlib.import_module(f"waveshare_epd.{d_name}")
+                    self._module = mod
+                    self._epd = mod.EPD()
+                    log.info("EpdManager: 成功加载墨水屏驱动 (%s)", d_name)
+                    break
+                except Exception as exc:
+                    log.debug("尝试加载驱动 %s 失败: %s", d_name, exc)
+
+            if self._epd is None:
+                log.warning("EpdManager: 未找到可用的 waveshare_epd 驱动模块 (PC 预览模式)")
         except Exception as exc:
             log.warning(
                 "EpdManager: waveshare_epd SDK 不可用，显示操作将被跳过 (%s)", exc
@@ -44,12 +61,14 @@ class EpdManager:
 
     # ── 基础操作 ──────────────────────────────────────────
 
-    def full_update(self, image: Image.Image) -> None:
-        """全量刷新。每日数据更新时使用。"""
+    def full_update(self, image: Image.Image, clean_first: bool = True) -> None:
+        """全量刷新。清屏复位微胶囊电荷后显示，获得最深最黑的高对比度。"""
         if self._epd is None:
             return
-        log.info("EPD: 全量刷新")
+        log.info("EPD: 全量刷新 (先清屏复位=%s)", clean_first)
         self._epd.init()
+        if clean_first and hasattr(self._epd, "Clear"):
+            self._epd.Clear()
         self._epd.display(self._epd.getbuffer(image))
         self._init_partial_done = False
 

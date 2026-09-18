@@ -60,17 +60,19 @@ class Renderer:
 
     def __init__(self):
         font_path = str(get_font_path())
-        self.font_title = ImageFont.truetype(font_path, 18)
-        self.font_header = ImageFont.truetype(font_path, 16)
-        self.font_body = ImageFont.truetype(font_path, 14)
-        self.font_summary_num = ImageFont.truetype(font_path, 15)
-        self.font_small = ImageFont.truetype(font_path, 12)
-        self.font_tiny = ImageFont.truetype(font_path, 10)
+        self.font_title = ImageFont.truetype(font_path, 20)
+        self.font_header = ImageFont.truetype(font_path, 17)
+        self.font_body = ImageFont.truetype(font_path, 15)
+        self.font_summary_num = ImageFont.truetype(font_path, 16)
+        self.font_small = ImageFont.truetype(font_path, 13)
+        self.font_tiny = ImageFont.truetype(font_path, 11)
 
-        # 预先生成 800x480 的 50% 棋盘灰度点阵底图，用于生成墨水屏灰度条形图
-        row_even = bytes([0xAA] * (W // 8))
-        row_odd = bytes([0x55] * (W // 8))
-        raw_bytes = b"".join(row_even if y % 2 == 0 else row_odd for y in range(H))
+        # 75% 高对比度浓黑点阵底图：大幅加深墨水屏条形图黑度，彻底避免发淡发灰
+        row_a = bytes([0x88] * (W // 8))  # 10001000
+        row_b = bytes([0x00] * (W // 8))  # 00000000 全黑
+        row_c = bytes([0x22] * (W // 8))  # 00100010
+        row_d = bytes([0x00] * (W // 8))  # 00000000 全黑
+        raw_bytes = b"".join([row_a, row_b, row_c, row_d][y % 4] for y in range(H))
         self._checker_img = Image.frombytes("1", (W, H), raw_bytes)
 
     def _new_image(self) -> Tuple[Image.Image, ImageDraw.Draw]:
@@ -86,9 +88,9 @@ class Renderer:
         return img
 
     def _draw_hline(self, draw: ImageDraw.Draw, y: int,
-                    x1: int = 0, x2: int = W) -> None:
-        """画水平实线。"""
-        draw.line([(x1, y), (x2, y)], fill=LINE_COLOR, width=1)
+                    x1: int = 0, x2: int = W, width: int = 2) -> None:
+        """画水平实线 (默认2px粗线，墨水屏更清晰)。"""
+        draw.line([(x1, y), (x2, y)], fill=LINE_COLOR, width=width)
 
     def _draw_dashed_hline(self, draw: ImageDraw.Draw, y: int,
                            x1: int, x2: int, dash: int = 3, gap: int = 3) -> None:
@@ -112,7 +114,7 @@ class Renderer:
         img, draw = self._new_image()
         ts = timestamp or datetime.now()
 
-        # 顶部标题
+        # 顶部标题 (字号放大到 20pt，清晰醒目)
         title = "南方电网 · 微信扫码登录"
         bbox = draw.textbbox((0, 0), title, font=self.font_title)
         tw = bbox[2] - bbox[0]
@@ -125,13 +127,13 @@ class Renderer:
         qr_y = 65
         img.paste(qr_img, (qr_x, qr_y))
 
-        # 二维码边框
+        # 二维码边框 (2px 粗线，清晰)
         draw.rectangle(
             [qr_x - 3, qr_y - 3, qr_x + qr_size + 3, qr_y + qr_size + 3],
             outline=LINE_COLOR, width=2
         )
 
-        # 提示文字
+        # 提示文字 (17pt 清晰)
         hint = "请使用微信扫描上方二维码绑定/登录"
         bbox = draw.textbbox((0, 0), hint, font=self.font_header)
         hw = bbox[2] - bbox[0]
@@ -140,17 +142,17 @@ class Renderer:
 
         # 时间戳
         ts_text = f"生成时间: {ts.strftime('%Y-%m-%d %H:%M')}"
-        bbox = draw.textbbox((0, 0), ts_text, font=self.font_small)
+        bbox = draw.textbbox((0, 0), ts_text, font=self.font_body)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) // 2, qr_y + qr_size + 55), ts_text,
-                  fill=LINE_COLOR, font=self.font_small)
+                  fill=LINE_COLOR, font=self.font_body)
 
         # 底部提示
         foot = "二维码有效期约5分钟，过期后系统将自动刷新重试"
-        bbox = draw.textbbox((0, 0), foot, font=self.font_tiny)
+        bbox = draw.textbbox((0, 0), foot, font=self.font_small)
         fw = bbox[2] - bbox[0]
         draw.text(((W - fw) // 2, H - 28), foot,
-                  fill=LINE_COLOR, font=self.font_tiny)
+                  fill=LINE_COLOR, font=self.font_small)
 
         return self._finalize(img)
 
@@ -241,8 +243,8 @@ class Renderer:
         渲染单个户号卡片。
         按需求：上月和本月用电情况在同一行展示，下方使用条形图(kWh)与折线(¥)展示。
         """
-        # 卡片外框
-        draw.rounded_rectangle([x1, y1, x2, y2], radius=5, outline=LINE_COLOR, width=1)
+        # 卡片外框 (2px粗黑线，清晰不发虚)
+        draw.rounded_rectangle([x1, y1, x2, y2], radius=6, outline=LINE_COLOR, width=2)
 
         acc_num = data.get("account_number", "")
         user_name = data.get("user_name", "")
@@ -258,7 +260,7 @@ class Renderer:
         draw.text((x1 + 36, y1 + 26), acc_num, fill=LINE_COLOR, font=self.font_small)
 
         header_split_y = y1 + 46
-        self._draw_hline(draw, header_split_y, x1, x2)
+        self._draw_hline(draw, header_split_y, x1, x2, width=2)
 
         # ── 2. 上月与本月汇总 (同一行展示) (header_split_y 到 header_split_y + 48) ──
         sum_y = header_split_y + 4
@@ -277,8 +279,8 @@ class Renderer:
         last_str = f"{last_kwh:.1f}度  ¥{last_cost:.2f}"
         draw.text((x1 + 10, sum_y + 18), last_str, fill=LINE_COLOR, font=self.font_summary_num)
 
-        # 中间微细分隔线
-        draw.line([(mid_x, sum_y + 2), (mid_x, sum_y + 36)], fill=LINE_COLOR, width=1)
+        # 中间微细分隔线 (2px粗线)
+        draw.line([(mid_x, sum_y + 2), (mid_x, sum_y + 36)], fill=LINE_COLOR, width=2)
 
         # 右列: 本月用电 (带走势对比符号)
         trend = "↑" if cur_kwh > last_kwh else ("↓" if cur_kwh < last_kwh else "")
@@ -287,7 +289,7 @@ class Renderer:
         draw.text((mid_x + 10, sum_y + 18), cur_str, fill=LINE_COLOR, font=self.font_summary_num)
 
         summary_split_y = header_split_y + 44
-        self._draw_hline(draw, summary_split_y, x1, x2)
+        self._draw_hline(draw, summary_split_y, x1, x2, width=2)
 
         # ── 3. 图表区域 (summary_split_y 到 y2) ──
         daily_usage = cur.get("daily_usage", [])
@@ -301,8 +303,8 @@ class Renderer:
     ) -> None:
         """
         绘制条形图 + 折线图组合图表。
-        - 左 Y 轴: 用电量 (kWh / 度)，以点阵灰度柱状图展示
-        - 右 Y 轴: 电费 (元)，以实线折线图展示
+        - 左 Y 轴: 用电量 (kWh / 度)，以浓黑点阵柱状图展示
+        - 右 Y 轴: 电费 (元)，以加粗实线折线图展示
         - X 轴: 日期 (MM-DD)
         """
         # 图例说明栏
@@ -312,7 +314,7 @@ class Renderer:
 
         # 右侧图例: [▒] 度数  ●─ 电费
         leg_bar_x = x2 - 145
-        # 绘制图例小方块 (点阵)
+        # 绘制图例小方块 (深色点阵)
         draw.rectangle([leg_bar_x, legend_y + 1, leg_bar_x + 10, legend_y + 11], outline=LINE_COLOR, width=1)
         bar_icon_crop = self._checker_img.crop((leg_bar_x + 1, legend_y + 2, leg_bar_x + 10, legend_y + 11))
         img.paste(bar_icon_crop, (leg_bar_x + 1, legend_y + 2))
@@ -360,7 +362,7 @@ class Renderer:
 
             # 网格线 (最底部为实线，其余为虚线)
             if i == 0:
-                draw.line([(plot_x1, grid_y), (plot_x2, grid_y)], fill=LINE_COLOR, width=1)
+                draw.line([(plot_x1, grid_y), (plot_x2, grid_y)], fill=LINE_COLOR, width=2)
             else:
                 self._draw_dashed_hline(draw, grid_y, plot_x1, plot_x2)
 
@@ -402,7 +404,7 @@ class Renderer:
                 cby1 = max(0, min(H, by1))
                 cbx2 = max(cbx1 + 1, min(W, bx2))
                 cby2 = max(cby1 + 1, min(H, by2))
-                # 填充棋盘点阵
+                # 填充浓黑点阵
                 bar_crop = self._checker_img.crop((cbx1, cby1, cbx2, cby2))
                 img.paste(bar_crop, (cbx1, cby1))
                 # 黑色描边
@@ -416,16 +418,16 @@ class Renderer:
 
         # 2. 绘制折线图 (Cost)
         if len(line_points) > 1:
-            draw.line(line_points, fill=LINE_COLOR, width=2)
+            draw.line(line_points, fill=LINE_COLOR, width=3)
         elif len(line_points) == 1:
             # 只有1天数据
             pt = line_points[0]
-            draw.ellipse([pt[0] - 3, pt[1] - 3, pt[0] + 3, pt[1] + 3], fill=LINE_COLOR)
+            draw.ellipse([pt[0] - 4, pt[1] - 4, pt[0] + 4, pt[1] + 4], fill=LINE_COLOR)
 
         # 绘制折线各数据点的圆点标记（带白色衬底防遮挡）
         for pt in line_points:
             # 白色衬圈
-            draw.ellipse([pt[0] - 4, pt[1] - 4, pt[0] + 4, pt[1] + 4], fill=BG_COLOR, outline=BG_COLOR)
+            draw.ellipse([pt[0] - 5, pt[1] - 5, pt[0] + 5, pt[1] + 5], fill=BG_COLOR, outline=BG_COLOR)
             # 黑色实心点
             draw.ellipse([pt[0] - 3, pt[1] - 3, pt[0] + 3, pt[1] + 3], fill=LINE_COLOR)
 
