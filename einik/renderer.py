@@ -21,7 +21,7 @@ try:
 except ImportError:
     qrcode = None
 
-from einik.config import EPD_WIDTH, EPD_HEIGHT, PREVIEW_DIR, get_font_path
+from einik.config import EPD_WIDTH, EPD_HEIGHT, ROTATE_180, PREVIEW_DIR, get_font_path
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +78,12 @@ class Renderer:
         img = Image.new("1", (W, H), BG_COLOR)
         draw = ImageDraw.Draw(img)
         return img, draw
+
+    def _finalize(self, img: Image.Image) -> Image.Image:
+        """最终处理：根据配置翻转 180°。"""
+        if ROTATE_180:
+            return img.rotate(180)
+        return img
 
     def _draw_hline(self, draw: ImageDraw.Draw, y: int,
                     x1: int = 0, x2: int = W) -> None:
@@ -146,7 +152,7 @@ class Renderer:
         draw.text(((W - fw) // 2, H - 28), foot,
                   fill=LINE_COLOR, font=self.font_tiny)
 
-        return img
+        return self._finalize(img)
 
     def _generate_qr_image(self, data: str, size: int) -> Image.Image:
         """生成二维码图片。"""
@@ -178,8 +184,9 @@ class Renderer:
 
     def render_dashboard(self, accounts_data: List[Dict[str, Any]]) -> Image.Image:
         """
-        渲染双户号用电数据仪表盘 (左右分栏)。
-        每个面板包含户号信息、上月与本月单行汇总、日用电量条形图与电费折线图。
+        渲染用电数据仪表盘。
+        - 2个户号：左右分栏展示
+        - 1个户号：全屏单卡片展示（充分利用 800px 宽度）
         """
         img, draw = self._new_image()
         now = datetime.now()
@@ -196,40 +203,35 @@ class Renderer:
         tw = bbox[2] - bbox[0]
         draw.text((W - tw - 14, 8), ts_text, fill=BG_COLOR, font=self.font_small)
 
-        # ── 左右卡片布局计算 ──
         margin_x = 8
-        card_gap = 10
         card_top = top_bar_h + 8
         card_bottom = H - 8
-        card_h = card_bottom - card_top
-        card_w = (W - 2 * margin_x - card_gap) // 2
 
-        card1_x1 = margin_x
-        card1_x2 = card1_x1 + card_w
+        num_accounts = len(accounts_data)
 
-        card2_x1 = card1_x2 + card_gap
-        card2_x2 = card2_x1 + card_w
+        if num_accounts >= 2:
+            # ── 双户号：左右分栏 ──
+            card_gap = 10
+            card_w = (W - 2 * margin_x - card_gap) // 2
 
-        # 渲染卡片 1 (户号1)
-        if len(accounts_data) >= 1:
+            card1_x1 = margin_x
+            card1_x2 = card1_x1 + card_w
+            card2_x1 = card1_x2 + card_gap
+            card2_x2 = card2_x1 + card_w
+
             self._render_account_card(img, draw, accounts_data[0],
                                      card1_x1, card1_x2, card_top, card_bottom)
-
-        # 渲染卡片 2 (户号2)
-        if len(accounts_data) >= 2:
             self._render_account_card(img, draw, accounts_data[1],
                                      card2_x1, card2_x2, card_top, card_bottom)
-        elif len(accounts_data) == 1:
-            # 只有一个户号时右侧卡片显示空位占位
-            draw.rounded_rectangle([card2_x1, card_top, card2_x2, card_bottom],
-                                   radius=6, outline=LINE_COLOR, width=1)
-            hint = "未配置第二个监控户号"
-            bbox = draw.textbbox((0, 0), hint, font=self.font_header)
-            hw = bbox[2] - bbox[0]
-            draw.text((card2_x1 + (card_w - hw) // 2, card_top + card_h // 2 - 10),
-                      hint, fill=LINE_COLOR, font=self.font_header)
 
-        return img
+        elif num_accounts == 1:
+            # ── 单户号：全屏宽展示 ──
+            card_x1 = margin_x
+            card_x2 = W - margin_x
+            self._render_account_card(img, draw, accounts_data[0],
+                                     card_x1, card_x2, card_top, card_bottom)
+
+        return self._finalize(img)
 
     def _render_account_card(
         self, img: Image.Image, draw: ImageDraw.Draw, data: Dict[str, Any],
@@ -486,7 +488,7 @@ class Renderer:
         draw.text(((W - tw) // 2, H - 40), ts,
                   fill=LINE_COLOR, font=self.font_small)
 
-        return img
+        return self._finalize(img)
 
     def _draw_wrapped_text(
         self, draw: ImageDraw.Draw, text: str,
