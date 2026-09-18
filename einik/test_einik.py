@@ -112,3 +112,69 @@ except Exception as e:
     print(f"Renderer test failed: {e}")
     import traceback
     traceback.print_exc()
+
+# Test 3: Account filtering logic (3 accounts -> 2 accounts with last month data)
+print("\n=== Account Selection Test ===")
+from unittest.mock import MagicMock
+from einik.csg_service import CSGService
+
+test_service = CSGService()
+test_service.client = MagicMock()
+# 模拟绑定了 3 个户号
+test_service.client.get_accounts.return_value = [
+    {"account_number": "0601000000000001", "user_name": "张三", "address": "广州天河"},
+    {"account_number": "0601000000000002", "user_name": "李四 (空置户)", "address": "广州越秀"},
+    {"account_number": "0601000000000003", "user_name": "王五", "address": "广州番禺"},
+]
+
+def mock_fetch_usage(acc_num, year, month):
+    # 模拟户号2上个月无数据(total_kwh=0)，户号1和户号3上个月有数据
+    if acc_num == "0601000000000002":
+        return {
+            "account_number": acc_num,
+            "user_name": "李四 (空置户)",
+            "address": "广州越秀",
+            "total_kwh": 0.0,
+            "total_cost": 0.0,
+            "balance": 50.0,
+            "daily_usage": [],
+        }
+    elif acc_num == "0601000000000001":
+        return {
+            "account_number": acc_num,
+            "user_name": "张三",
+            "address": "广州天河",
+            "total_kwh": 185.0 if month == 8 else 92.0,
+            "total_cost": 108.89 if month == 8 else 54.15,
+            "balance": 200.0,
+            "daily_usage": [{"date": f"2026-{month:02d}-01", "kwh": 10.0, "cost": 5.88}],
+        }
+    else:
+        return {
+            "account_number": acc_num,
+            "user_name": "王五",
+            "address": "广州番禺",
+            "total_kwh": 260.5 if month == 8 else 130.0,
+            "total_cost": 153.33 if month == 8 else 76.51,
+            "balance": 120.0,
+            "daily_usage": [{"date": f"2026-{month:02d}-01", "kwh": 12.0, "cost": 7.06}],
+        }
+
+test_service.fetch_usage_data = MagicMock(side_effect=mock_fetch_usage)
+
+selected_accounts = test_service.fetch_all_accounts_data()
+print("选中的展示户号列表:")
+for acc in selected_accounts:
+    print(f"  - 户号: {acc['account_number']}, 用户: {acc['user_name']}, 上月用电: {acc['last_month']['total_kwh']}度")
+
+selected_numbers = [a["account_number"] for a in selected_accounts]
+assert len(selected_accounts) == 2, f"Expected 2 accounts, got {len(selected_accounts)}"
+assert "0601000000000001" in selected_numbers, "Account 1 should be selected"
+assert "0601000000000003" in selected_numbers, "Account 3 should be selected"
+assert "0601000000000002" not in selected_numbers, "Account 2 (no data) should NOT be selected"
+
+from einik.config import CONFIG_FILE
+if CONFIG_FILE.exists():
+    CONFIG_FILE.unlink()
+
+print("\nAll account selection tests PASSED!")

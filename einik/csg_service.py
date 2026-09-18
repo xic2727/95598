@@ -30,6 +30,7 @@ from einik.config import (
     QR_POLL_TIMEOUT,
     load_config,
     save_config,
+    get_candidate_accounts,
 )
 from einik.pricing import calculate_monthly_cost, calculate_daily_costs
 
@@ -122,12 +123,9 @@ class CSGService:
         # 保存到配置
         config = load_config()
         config["all_accounts"] = accounts
-        # 如果还没有指定监控户号，默认取前两个
-        if "account_numbers" not in config or not config["account_numbers"]:
-            config["account_numbers"] = [
-                acc["account_number"] for acc in accounts[:2]
-            ]
-            log.info("已自动选择前 %d 个户号进行监控", len(config["account_numbers"]))
+        # 保存所有绑定户号为候选列表
+        config["account_numbers"] = [acc["account_number"] for acc in accounts]
+        log.info("已将全部 %d 个绑定户号加入候选监控列表", len(config["account_numbers"]))
         save_config(config)
         return accounts
 
@@ -184,30 +182,35 @@ class CSGService:
 
     def fetch_all_accounts_data(self) -> List[Dict[str, Any]]:
         """
-        获取配置中所有户号的当月和上月用电数据。
+        获取户号的当月和上月用电数据。
+        当绑定户号多于 2 个时，自动筛选上月有数据（用电量 > 0）的 2 个户号进行展示。
 
         Returns:
-            [
-                {
-                    "account_number": str,
-                    "user_name": str,
-                    "current_month": {...},  # 当月数据
-                    "last_month": {...},     # 上月数据
-                },
-                ...
-            ]
+            展示户号数据列表 (最多 2 个)
         """
-        from einik.config import get_account_numbers
-        account_numbers = get_account_numbers()
+        # 尝试从 API 同步刷新所有绑定的户号
+        try:
+            api_accounts = self.client.get_accounts()
+            if api_accounts:
+                cfg = load_config()
+                cfg["all_accounts"] = api_accounts
+                cfg["account_numbers"] = [acc["account_number"] for acc in api_accounts]
+                save_config(cfg)
+        except Exception as e:
+            log.debug("尝试获取最新户号列表失败，使用本地配置: %s", e)
 
-        if not account_numbers:
+        candidates = get_candidate_accounts()
+
+        if not candidates:
             log.warning("配置中无户号，尝试从 API 获取...")
             self.fetch_and_save_accounts()
-            account_numbers = get_account_numbers()
+            candidates = get_candidate_accounts()
 
-        if not account_numbers:
+        if not candidates:
             log.error("无法获取户号列表")
             return []
+
+        log.info("待检查候选户号 (%d 个): %s", len(candidates), candidates)
 
         now = datetime.now()
         cur_year, cur_month = now.year, now.month
@@ -218,17 +221,29 @@ class CSGService:
         else:
             last_year, last_month = cur_year, cur_month - 1
 
-        all_data = []
-        for acc_num in account_numbers[:2]:  # 最多两个户号
-            log.info("获取户号 %s 的用电数据...", acc_num)
+        all_candidates_data = []
+        for acc_num in candidates:
+            log.info("获取户号 %s 的用电数据 (上月 %d-%02d / 当月 %d-%02d)...",
+                     acc_num, last_year, last_month, cur_year, cur_month)
             try:
-                current = self.fetch_usage_data(acc_num, cur_year, cur_month)
                 last = self.fetch_usage_data(acc_num, last_year, last_month)
-                all_data.append({
+                current = self.fetch_usage_data(acc_num, cur_year, cur_month)
+
+                user_name = current.get("user_name") or last.get("user_name") or ""
+                address = current.get("address") or last.get("address") or ""
+                balance = current.get("balance", 0.0)
+
+                last_kwh = last.get("total_kwh", 0.0)
+                # 判定上月是否有数据：用电度数 > 0 或日用电明细有度数 > 0
+                has_last_month_data = (last_kwh > 0) or any(
+                    d.get("kwh", 0) > 0 for d in last.get("daily_usage", [])
+                )
+
+                acc_data = {
                     "account_number": acc_num,
-                    "user_name": current.get("user_name", ""),
-                    "address": current.get("address", ""),
-                    "balance": current.get("balance", 0.0),
+                    "user_name": user_name,
+                    "address": address,
+                    "balance": balance,
                     "current_month": {
                         "year": cur_year,
                         "month": cur_month,
@@ -241,14 +256,19 @@ class CSGService:
                         "month": last_month,
                         "total_kwh": last["total_kwh"],
                         "total_cost": last["total_cost"],
+                        "daily_usage": last.get("daily_usage", []),
                     },
-                })
-                log.info("  当月: %.1f度 ¥%.2f | 上月: %.1f度 ¥%.2f",
-                         current["total_kwh"], current["total_cost"],
-                         last["total_kwh"], last["total_cost"])
+                    "has_last_month_data": has_last_month_data,
+                }
+                all_candidates_data.append(acc_data)
+                log.info("  户号 %s (%s): 上月=%.1f度(¥%.2f, %s) | 当月=%.1f度(¥%.2f)",
+                         acc_num, user_name,
+                         last["total_kwh"], last["total_cost"],
+                         "上月有数据" if has_last_month_data else "上月无数据",
+                         current["total_kwh"], current["total_cost"])
             except Exception as e:
                 log.error("获取户号 %s 数据失败: %s", acc_num, e)
-                all_data.append({
+                all_candidates_data.append({
                     "account_number": acc_num,
                     "user_name": "获取失败",
                     "address": "",
@@ -261,9 +281,42 @@ class CSGService:
                         "year": last_year, "month": last_month,
                         "total_kwh": 0, "total_cost": 0,
                     },
+                    "has_last_month_data": False,
                 })
 
-        return all_data
+        # ── 智能筛选：优先选择上月有数据（用电量 > 0）的户号 ──
+        with_data = [acc for acc in all_candidates_data if acc.get("has_last_month_data")]
+        without_data = [acc for acc in all_candidates_data if not acc.get("has_last_month_data")]
+
+        if len(with_data) >= 2:
+            # 找到 2 个或以上上月有数据的户号，取前 2 个展示
+            selected = with_data[:2]
+            log.info("已选出上月有数据的 2 个户号进行展示: %s",
+                     [a["account_number"] for a in selected])
+        elif len(with_data) == 1:
+            # 仅 1 个户号上月有数据，如果有其他候选户号则补选 1 个凑成双户号，否则单户展示
+            if without_data:
+                selected = with_data + without_data[:1]
+                log.info("仅 1 个户号上月有数据，补选 1 个户号展示: %s",
+                         [a["account_number"] for a in selected])
+            else:
+                selected = with_data
+                log.info("仅 1 个户号有数据，采用单户号全屏展示: %s",
+                         selected[0]["account_number"])
+        else:
+            # 全部无上月数据，默认展示前两个
+            selected = all_candidates_data[:2]
+            log.warning("候选户号上月均无数据，默认展示前 %d 个户号", len(selected))
+
+        # 记录实际展示户号到配置供参考
+        try:
+            cfg = load_config()
+            cfg["display_accounts"] = [a["account_number"] for a in selected]
+            save_config(cfg)
+        except Exception:
+            pass
+
+        return selected
 
 
 # 单例

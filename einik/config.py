@@ -84,3 +84,21 @@ def get_account_numbers() -> list[str]:
     """从配置中获取要监控的户号列表。"""
     config = load_config()
     return config.get("account_numbers", [])
+
+
+def get_candidate_accounts() -> list[str]:
+    """从配置中获取所有候选户号列表（合并 account_numbers 和 all_accounts）。"""
+    config = load_config()
+    candidates = []
+    # 显式指定的 account_numbers
+    for acc in config.get("account_numbers", []):
+        acc_str = str(acc).strip()
+        if acc_str and acc_str not in candidates:
+            candidates.append(acc_str)
+    # 补充 all_accounts 中的户号
+    for item in config.get("all_accounts", []):
+        acc = item.get("account_number") if isinstance(item, dict) else str(item)
+        acc_str = str(acc).strip() if acc else ""
+        if acc_str and acc_str not in candidates:
+            candidates.append(acc_str)
+    return candidates
